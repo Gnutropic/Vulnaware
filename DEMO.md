@@ -288,3 +288,18 @@ Video URL: https://drive.google.com/file/d/1DdwOnI43hhhPd--2l9DoJt-GqOItLGZb/vie
 The recording is approximately 9 minutes long.
 
 
+### Demonstration Timestamps
+
+| Scenario | Description | Video Timestamp |
+|---|---|---|
+| Setup | Kali Linux environment and project directory | 00:00 |
+| S1 | Authorized TCP scan with simulated OpenSSL banner | 00:45 |
+| S2 | Allowlist enforcement and unauthorized port 2223 rejection | 03:10 |
+| S3 | Review of previously recorded closed-port results | 05:35 |
+| S4 | Review of previously recorded silent-service results | 06:00 |
+| S5 | Nmap TCP connect comparison | 08:10 |
+
+**Recording duration:** 09:08.
+
+**Note:** S3 and S4 display saved JSON results from earlier controlled tests. Their reproduction commands and reset procedures are documented above.
+
