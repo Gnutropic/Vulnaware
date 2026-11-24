@@ -1,0 +1,33 @@
+// @polsia:user-owned — Competitive intel audit results. One row per (team,
+// nightly run); `headline` is the caller-facing summary (the "fresh
+// competitive read every morning"), `body` is the full audit text. The
+// platform cron in jobs/competitive-intel-run.ts re-runs the audit at
+// scheduled time, then writes a row scoped to the (team, ranAt) unique
+// key so a re-fire within the same UTC day is a no-op. The list API at
+// /api/intel/runs materializes rows for the caller's team, newest-first.
+//
+// Note on naming: the original brief referred to a "workspaceId" column.
+// Every per-team FK in this repo already uses `teamId` (the latent
+// `Team` model lives in api-key.prisma; there is no Workspace primitive),
+// so the column is renamed to `teamId` so the back-ref and the
+// existing `requireTeamRead()` / `getMyTeam()` helpers compose without
+// a parallel mapping layer. `teamId` is the scalar FK; the back-ref
+// `Team.competitorRuns` is appended on the `Team` model in
+// api-key.prisma so Prisma's cross-file @relation validates cleanly.
+
+model CompetitiveIntelRun {
+  id String @id @default(cuid())
+
+  teamId String
+  team   Team   @relation("TeamIntelRuns", fields: [teamId], references: [id], onDelete: Cascade)
+
+  ranAt    DateTime
+  headline String
+  body     String
+
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, ranAt])
+  @@index([teamId, ranAt])
+  @@index([teamId])
+}

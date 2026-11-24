@@ -1,0 +1,120 @@
+// @polsia:user-owned — AWS asset discovery models. Purely additive — does not
+// touch any existing model. Users connect AWS accounts via cross-account IAM
+// role assumption (Option A): `AwsConnection` stores the role ARN + external
+// id only; no long-lived IAM user keys are ever persisted. Discovery runs are
+//      persisted as `AwsDiscoveryRun` (queued/running/succeeded/failed) and
+// per-region resources as `AwsAsset` (sibling of `Asset`, not a mutation of
+// it). Run fan-out is drained by the cron in polsia.toml.
+// userId is a scalar String — User (auth-owned) cannot host a @relation, so
+// foreign reads happen by id array lookup in app code, never `include: user`.
+
+model AwsConnection {
+  id String @id @default(cuid())
+
+  // Owner of the connection. NOT a Prisma @relation — User is locked in
+  // auth.prisma and Prisma can't extend a back-relation across files. Reads/
+  // joins are done by `userId` scalar lookups in app code.
+  userId String
+
+  roleArn      String
+  externalId   String
+  label        String
+  // Regions pinned to this connection. If empty, env.AWS_REGION is used
+  // for STS only AND the orchestrator fans out to the regions enumerated
+  // here. Mirrored from the discoveryRegions input on create.
+  regions      String[]  @default([])
+  createdAt    DateTime  @default(now())
+  lastTestedAt DateTime?
+
+  runs AwsDiscoveryRun[] @relation("AwsConnRuns")
+
+  @@index([userId])
+}
+
+model AwsDiscoveryRun {
+  id String @id @default(cuid())
+
+  // Owner — scalar, same rationale as AwsConnection.userId.
+  userId String
+
+  connectionId String
+  connection   AwsConnection @relation("AwsConnRuns", fields: [connectionId], references: [id], onDelete: Cascade)
+
+  status         String    @default("queued")
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  errorMessage   String?
+  // Reported by STS after AssumeRole. Null when run failed before STS.
+  accountId      String?
+  // Frozen copy of the regions scanned; useful when the connection's regions
+  // list changes between runs.
+  regions        String[]  @default([])
+  resourcesTotal Int       @default(0)
+
+  assets   AwsAsset[]   @relation("AwsRunAssets")
+  findings AwsFinding[] @relation("AwsRunFindings")
+
+  @@index([userId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([userId, status])
+}
+
+model AwsAsset {
+  id String @id @default(cuid())
+
+  runId String
+  run   AwsDiscoveryRun @relation("AwsRunAssets", fields: [runId], references: [id], onDelete: Cascade)
+
+  accountId      String
+  region         String
+  resourceType   String
+  // The full ARN the SDK reported, normalized to a string. The matcher uses
+  // resourceType as the primary key + the ARN for the unique id within the
+  // run; rows are deduped on (runId, resourceArn).
+  resourceArn    String
+  resourceId     String?
+  tags           Json?
+  // 'public' | 'private' | 'unknown' — the matcher uses this to escalate
+  // findings to Critical on public + misconfig.
+  publicExposure String?
+  serviceHint    String?
+  findings       AwsFinding[] @relation("AwsAssetFindings")
+
+  @@unique([runId, resourceArn])
+  @@index([runId])
+  @@index([resourceType, publicExposure])
+}
+
+// Sibling of VulnerabilityFinding (scan-driven) — shape-driven findings from
+// the AWS discovery matcher. Synthesized cveId values like AWS-S3-PUBLIC-001
+// are valid Strings but not real CVE entries, so this model anchors to the
+// discovered AwsAsset id (FK CASCADE on AWS rows) instead of Scan/Asset.
+model AwsFinding {
+  id String @id @default(cuid())
+
+  runId String
+  run   AwsDiscoveryRun @relation("AwsRunFindings", fields: [runId], references: [id], onDelete: Cascade)
+
+  assetId String
+  asset   AwsAsset @relation("AwsAssetFindings", fields: [assetId], references: [id], onDelete: Cascade)
+
+  cveId          String // Synthesized 'AWS-*' id for shape findings; real CVEs use real CVE ids.
+  // Provenance of cveId — 'synthesized' (the AWS-*/AZ-*/GCP-* ids), 'shape'
+  // (a synthesized id that maps to a real-CVE descriptor), or 'cve-db' (a
+  // real CVE-* id sourced from matcher.ts / cve-feed.ts). UI reads this to
+  // badge the source distinctly. Defaults to 'synthesized' so existing rows
+  // match the prior behavior.
+  cveSource      String?   @default("synthesized")
+  severity       String?
+  matchReason    String
+  priorityScore  Float?
+  epssScore      Float?
+  epssPercentile Float?
+  kevListed      Boolean   @default(false)
+  kevListedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([runId, cveId])
+  @@index([assetId])
+}

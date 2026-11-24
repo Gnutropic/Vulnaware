@@ -1,0 +1,66 @@
+// @polsia:user-owned — Scoped API key models. Every key belongs to a Team;
+// every key has a `scopeKind` of `team` (broad access — lists + per-scan
+// results inside the team) or `scan` (single `scanId` — cannot list scans).
+// The plaintext secret is NEVER stored; only a scrypt-derived
+// "<salt-hex>$<hash-hex>" string. Plaintext is returned exactly once on
+// create (POST /api/v1/keys) and never persisted anywhere.
+// Cross-file relation `TeamScans` is the back-reference for Scan.teamId on
+// scan.prisma; both sides declare it, so prisma generate accepts it.
+
+model Team {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  // Nightly 07:00 critical/high digest toggle + idempotency stamp.
+  // Defaults to true so all pre-existing teams opt-in on the first
+  // `prisma db push` after this column lands; admins flip the toggle
+  // via PATCH /api/team/settings. lastAlertDigestAt is UTC ms serialised
+  // from JS Date().toISOString() and advances once per UTC day when
+  // the digest (or an empty-day all-clear email) is dispatched.
+  digestEnabled      Boolean   @default(true)
+  lastAlertDigestAt  DateTime?
+
+  // Per-team opt-out + idempotency stamp for the 09:00 UTC daily digest.
+  // Sits alongside the 07:00 nightly digest settings, but uses its OWN
+  // stamp column so a busy day cannot suppress the 09:00 cadence on the
+  // shared `lastAlertDigestAt`. dailyDigestEnabled defaults to true so
+  // legacy teams opt-in post-`prisma db push` without a backfill.
+  dailyDigestEnabled Boolean   @default(true)
+  lastDailyDigestAt  DateTime?
+
+  keys           ApiKey[]
+  webhooks       Webhook[]
+  scans          Scan[]                       @relation("TeamScans")
+  memberships    Membership[]                 @relation("TeamMemberships")
+  trials         TrialWorkspace[]
+  alerts         Alert[]                      @relation("TeamAlerts")
+  schedules      CloudDiscoverySchedule[]     @relation("TeamCloudSchedules")
+  competitorRuns CompetitiveIntelRun[]        @relation("TeamIntelRuns")
+  notifications  TeamNotificationConfig[]
+}
+
+model ApiKey {
+  id   String @id @default(cuid())
+  name String
+
+  // scrypt hash: "<saltHex>$<hashHex>". Plaintext secret never stored.
+  hash String
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  // 'team' — list + read every scan owned by team
+  // 'scan' — only trigger/read a single scan whose id matches `scanId`
+  scopeKind String
+
+  // Required when scopeKind = 'scan'. Otherwise null.
+  scanId String?
+
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  @@index([teamId])
+  @@index([teamId, revokedAt])
+}

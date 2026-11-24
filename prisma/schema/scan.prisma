@@ -1,0 +1,140 @@
+// @polsia:user-owned — Asset Discovery & CVE Detection Engine.
+// Models for lightweight TCP probing + CVE matching against public feeds.
+// Append-only module; do NOT redeclare datasource or generator (lives in _base.prisma).
+
+model Scan {
+  id         String    @id @default(cuid())
+  target     String
+  mode       String    @default("tcp-only")
+  status     String
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  source     String    @default("scheduled")
+
+  teamId String?
+  team   Team?   @relation("TeamScans", fields: [teamId], references: [id])
+
+  assets         Asset[]                @relation("ScanAssets")
+  findings       VulnerabilityFinding[] @relation("ScanFindings")
+  webhookTrigger WebhookTrigger?        @relation("ScanWebhookTrigger")
+
+  @@index([startedAt])
+  @@index([teamId])
+}
+
+model Asset {
+  id     String @id @default(cuid())
+  scanId String
+  scan   Scan   @relation("ScanAssets", fields: [scanId], references: [id], onDelete: Cascade)
+
+  host        String
+  ip          String
+  port        Int
+  protocol    String  @default("tcp")
+  state       String
+  latencyMs   Int?
+  serviceHint String?
+  banner      String?
+
+  findings VulnerabilityFinding[] @relation("AssetFindings")
+
+  @@index([scanId])
+  @@index([host, port])
+}
+
+model CveEntry {
+  id          String    @id @default(cuid())
+  cveId       String    @unique
+  cvssScore   Float?
+  severity    String?
+  description String
+  vector      String?
+  publishedAt DateTime?
+  fetchedAt   DateTime  @default(now())
+
+  @@index([cveId])
+}
+
+model VulnerabilityFinding {
+  id     String @id @default(cuid())
+  scanId String
+  scan   Scan   @relation("ScanFindings", fields: [scanId], references: [id], onDelete: Cascade)
+
+  assetId String
+  asset   Asset  @relation("AssetFindings", fields: [assetId], references: [id], onDelete: Cascade)
+
+  cveId               String
+  severity            String?
+  matchReason         String
+  priorityScore       Float?
+  epssScore           Float?
+  epssPercentile      Float?
+  kevListed           Boolean   @default(false)
+  kevListedAt         DateTime?
+  // Live intel layer (populated at scan time AND re-stamped by
+  // jobs/threat-intel-ingest.ts + /api/scan/[id]/rescore when a fresh
+  // VulnCheck listing lands). rescoreSource records whether the most recent
+  // bump came from the initial scan, the cron replay, or an on-demand
+  // POST so audit rows reproduce the trigger.
+  vulncheckListed     Boolean   @default(false)
+  vulncheckObservedAt DateTime?
+  lastRescoreAt       DateTime?
+  rescoreSource       String?
+  alerts              Alert[]   @relation("FindingAlerts")
+
+  @@index([scanId, cveId])
+  @@index([assetId])
+  @@index([scanId, priorityScore])
+  @@index([scanId, vulncheckListed])
+  @@index([lastRescoreAt])
+}
+
+// Append-only hit log for every (scanId, cveId) the cron confirms on
+// VulnCheck — lets an analyst trace when a row first tripped. Not used for
+// ranking directly; the boolean `VulnerabilityFinding.vulncheckListed` is.
+model VulncheckHit {
+  id         String   @id @default(cuid())
+  scanId     String
+  cveId      String
+  observedAt DateTime
+  evidence   String?
+  source     String   @default("vulncheck-nvd-cve")
+
+  @@unique([scanId, cveId, observedAt])
+  @@index([scanId, cveId])
+}
+
+// Audit row written every time a finding's priorityScore is re-derived by
+// the live ingest pipeline or on-demand rescore endpoint. `trigger` is one
+// of "scan" | "cron:kev" | "cron:epss" | "cron:vulncheck" | "manual". Used
+// by the UI's "latest bump" timestamp and by the daily digest.
+model ThreatIntelEvent {
+  id            String   @id @default(cuid())
+  findingId     String
+  scanId        String
+  cveId         String
+  trigger       String
+  previousScore Float?
+  nextScore     Float?
+  previousKev   Boolean  @default(false)
+  nextKev       Boolean  @default(false)
+  previousVc    Boolean  @default(false)
+  nextVc        Boolean  @default(false)
+  observedAt    DateTime @default(now())
+
+  @@index([findingId, observedAt])
+  @@index([scanId, observedAt])
+}
+
+// One row per feed. Updated only by live-rescore.ts + the cron — never by
+// the /api/threat-intel/cursor route (read-only). lastError / lastErrorAt
+// let the UI surface "KEV fetch down" without grep'ing the worker log.
+model IntelFeedCursor {
+  id            String    @id @default(cuid())
+  feed          String    @unique
+  lastFetchedAt DateTime?
+  lastSuccessAt DateTime?
+  lastErrorAt   DateTime?
+  lastError     String?
+  itemsSeen     Int       @default(0)
+}

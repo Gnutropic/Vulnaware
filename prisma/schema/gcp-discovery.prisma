@@ -1,0 +1,111 @@
+// @polsia:user-owned — GCP asset discovery models. Purely additive: does not
+// touch any existing model. Mirrors the AWS discovery schema, with GCP-
+// specific credential fields. The customer-supplied service-account JSON is
+// stored per row — see the connection-form disclosure in src/components/custom/
+// gcp-connection-form.tsx for the user-visible warning.
+//
+// userId is a scalar String on every model — User lives in the framework-
+// owned auth.prisma and cannot host a @relation across files, so foreign
+// reads happen by id array lookup, never `include: { user: true }`.
+
+model GcpConnection {
+  id String @id @default(cuid())
+
+  // Owner of the connection. NOT a Prisma @relation — same rationale as
+  // AwsConnection.userId in prisma/schema/aws-discovery.prisma.
+  userId String
+
+  projectId          String
+  // Full service-account JSON, stored verbatim. The connection form
+  // discloses this storage to the user (see the form's warning banner).
+  serviceAccountJson String
+  label              String
+  // Zones pinned to this connection. Empty → fall back to 'us-central1-a'.
+  zones              String[]  @default([])
+  createdAt          DateTime  @default(now())
+  lastTestedAt       DateTime?
+
+  runs GcpDiscoveryRun[] @relation("GcpConnRuns")
+
+  @@index([userId])
+}
+
+model GcpDiscoveryRun {
+  id String @id @default(cuid())
+
+  // Owner — scalar, same rationale as GcpConnection.userId.
+  userId String
+
+  connectionId String
+  connection   GcpConnection @relation("GcpConnRuns", fields: [connectionId], references: [id], onDelete: Cascade)
+
+  status         String    @default("queued")
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  errorMessage   String?
+  // Resolved project id post-auth.
+  projectId      String?
+  // Frozen copy of the zones scanned.
+  zones          String[]  @default([])
+  resourcesTotal Int       @default(0)
+
+  assets   GcpAsset[]   @relation("GcpRunAssets")
+  findings GcpFinding[] @relation("GcpRunFindings")
+
+  @@index([userId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([userId, status])
+}
+
+model GcpAsset {
+  id String @id @default(cuid())
+
+  runId String
+  run   GcpDiscoveryRun @relation("GcpRunAssets", fields: [runId], references: [id], onDelete: Cascade)
+
+  projectId      String
+  zone           String
+  resourceType   String
+  // Fully-qualified GCP resource name (e.g.
+  // projects/<p>/zones/<z>/instances/<n>).
+  resourceArn    String
+  resourceId     String?
+  publicExposure String?
+  serviceHint    String?
+  tags           Json?
+  findings       GcpFinding[] @relation("GcpAssetFindings")
+
+  @@unique([runId, resourceArn])
+  @@index([runId])
+  @@index([resourceType, publicExposure])
+}
+
+// Sibling of AwsFinding — shape-driven GCP findings. Synthesized cveId
+// values like GCP-VM-PUBLIC-001 are valid Strings but not real CVE entries.
+model GcpFinding {
+  id String @id @default(cuid())
+
+  runId String
+  run   GcpDiscoveryRun @relation("GcpRunFindings", fields: [runId], references: [id], onDelete: Cascade)
+
+  assetId String
+  asset   GcpAsset @relation("GcpAssetFindings", fields: [assetId], references: [id], onDelete: Cascade)
+
+  cveId          String
+  // Provenance — same semantics as AwsFinding.cveSource: 'synthesized'
+  // (default for the GCP-* ids), 'shape' (resource-shape fingerprinting),
+  // or 'cve-db' (real CVE-* id from matcher.ts).
+  cveSource      String?   @default("synthesized")
+  severity       String?
+  matchReason    String
+  priorityScore  Float?
+  epssScore      Float?
+  epssPercentile Float?
+  kevListed      Boolean   @default(false)
+  kevListedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([runId, cveId])
+  @@index([assetId])
+}

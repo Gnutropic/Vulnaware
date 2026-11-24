@@ -1,0 +1,32 @@
+// @polsia:user-owned — Blog / threat-intel posts surfaced by /blog and
+// /blog/[slug]. Public/anonymous-readable (seo requirement), so no FK to
+// the framework-owned User or Team models: a post is just content the
+// pipeline writes and the pages render. `slug` is the public identifier,
+// `publishedAt` doubles as the publication timestamp (null = draft),
+// `tags` is a Postgres array kept on the row for MVP simplicity (sufficient
+// for overlap-based related-post scoring; no Tag/PostTag join needed).
+// `body` is bounded server-side at ~20k chars (mirroring the
+// CompetitiveIntelRun.body cap at src/lib/business/competitive-intel.ts)
+// so a runaway seed cannot bloat the wire payload. `ogImageUrl` is
+// optional so a db push migration lands zero-impact on existing rows;
+// every post inherits the brand OG via src/app/opengraph-image.tsx
+// when unset. Indexes: publishedAt for newest-first scans, slug for
+// the redundant safety check on `@unique`.
+
+model Post {
+  id String @id @default(cuid())
+
+  slug        String  @unique
+  title       String
+  summary     String
+  body        String
+  publishedAt DateTime?
+  tags        String[]
+  ogImageUrl  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([publishedAt])
+  @@index([slug])
+}

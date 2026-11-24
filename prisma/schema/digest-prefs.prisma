@@ -1,0 +1,50 @@
+// @polsia:user-owned — Per-user opt-in flag for the 08:30 UTC daily
+// alert digest cron (jobs/daily-user-digest.ts). One row per user; the
+// `digestEnabled` boolean is the only knob the /account "Receive daily
+// digest" toggle writes. `lastSentAt` is the per-user idempotency
+// stamp (UTC) so the once-per-UTC-day gate from
+// src/lib/business/daily-alert-digest.ts (borrowed into
+// src/lib/business/daily-user-digest.ts as `shouldFireToday`) prevents
+// re-sending if the cron is replayed within the same UTC calendar day.
+//
+// `userId` is a scalar FK onto `User.id` — no Prisma `@relation`. The
+// User model lives in the locked auth.prisma and rejects a back-
+// reference field (P1012). Mirrors UserWebhookConfig.userId exactly:
+// scalar, not nullable, indexed, `@unique` so `upsert({ where: { userId
+// } })` collapses existence into one call (the route handler uses it
+// exactly that way).
+//
+// Canonical naming: the boolean is `digestEnabled` (per user) — distinct
+// from `Team.digestEnabled` (per team) even though both share the same
+// default. Reader code can disambiguate by the table it's reading from;
+// the suffix `Enabled` (not `IsEnabled` / `enabled`) is the canonical
+// project-wide shape.
+//
+// No migration file. The template is schema-only (`npx prisma db push
+// ...` runs every boot — polsia.toml start line). The table materialises
+// on the first push after this file lands; existing rows are unaffected.
+
+model DailyDigestPrefs {
+  id                String    @id @default(cuid())
+  userId            String    @unique      // scalar FK to User.id — no @relation
+  digestEnabled     Boolean   @default(true)
+  // Inclusive-lower severities the digest should include. null = "all
+  // severities". One of `critical` | `high` | `medium` | `low`; the cron
+  // expands the threshold to a `{ in: [threshold and up] }` where-clause
+  // using the SEVERITY_RANK map (parity with the /alerts severity chip).
+  // Stored as a free-form String so a future widening of the rank set
+  // doesn't require a schema migration.
+  severityThreshold String?
+  // Per-user scoping of which assets the digest should sample. List of
+  // composite `${host}:${port}/${protocol}` strings — the same wire
+  // shape the /alerts `?asset=…` query already deep-links. null OR `[]`
+  // means "all assets for the user's team" (no narrowing). Stored as a
+  // Json so a future widening of the chip taxonomy doesn't grow the
+  // column set (mirror of VulnerabilityTrend.signal).
+  assetScope        Json?
+  lastSentAt        DateTime?              // per-user idempotency stamp (UTC)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([userId])
+}

@@ -1,0 +1,13 @@
+// @polsia:user-owned — Workspace roots for tenant-scoped data.
+// ownerUserId is a scalar reference to the framework-owned User model.
+// Legacy workspace IDs mirror Team.id so existing roster and alert behavior
+// remains stable while workspace-aware flows are added separately.
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  ownerUserId String?
+  createdAt   DateTime @default(now())
+
+  @@index([ownerUserId])
+}

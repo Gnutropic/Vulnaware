@@ -1,0 +1,25 @@
+// @polsia:user-owned — Per-team pending invitations. An invite row is created
+// by an admin who wants to bring on a teammate who has not signed up yet;
+// the acceptedAt column is set when the recipient clicks the magic link
+// and completes the accept-flow (a follow-up PR). Scalar FKs only — do not
+// add Team/User back-references (mirrors membership.prisma).
+//
+// (teamId, email) is unique to deduplicate pending invites — re-POSTing for
+// the same address refreshes the token in place rather than spawning a
+// second pending row. Once accepted, a fresh re-POST deletes the prior
+// accepted row and writes a new pending row (see route comment).
+
+model Invite {
+  id              String    @id @default(cuid())
+  teamId          String
+  email           String
+  tokenHash       String
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  invitedByUserId String
+  createdAt       DateTime  @default(now())
+
+  @@unique([teamId, email])
+  @@index([tokenHash])
+  @@index([teamId])
+}

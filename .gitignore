@@ -1,0 +1,66 @@
+# Polsia Next.js template — gitignore (Node + Next.js + tools)
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Production builds
+build/
+dist/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Env files: never commit .env*
+# Block every .env* variant (.env, .env.local, .env.production, .env.staging, …)
+# and keep only the committed .env.example documenting the shape.
+.env*
+!.env.example
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+coverage/
+test-results/
+playwright-report/
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
+.vercel
+
+# Polsia upgrade reconcile sidecars (never commit)
+*.polsia-app-old
+
+# Dev-only scratch scripts (delete-first-post, ad-hoc DB fixes, etc.).
+# Per the platform scratch-file policy — never commit these. The
+# `scripts-tmp-*` pattern matches committed dev patches that landed
+# before the rule (e.g. `scripts-tmp-delete-first-post.mjs`); biome
+# reads `.gitignore` via `useIgnoreFile: true`, so a stray scratch
+# file in this shape never blocks the lint gate.
+scripts-tmp-*
+
+# Local research scan output
+local-scan-results/
+
+# Final project submission exclusions
+*.mp4
+*.mov
+*.zip
+*.bak
+demo-evidence/

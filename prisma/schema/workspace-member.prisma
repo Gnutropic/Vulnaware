@@ -1,0 +1,35 @@
+// @polsia:user-owned — Canonical per-workspace roster.
+// One row per (workspaceId, email). Holds BOTH active members and pending
+// invites so /api/team/memberships can union-read without a JOIN and so the
+// /settings/team page renders a single source of truth.
+//
+// Schema notes:
+//  - Legacy `workspaceId` values alias `Team.id`; startup seed creates the
+//    matching Workspace roots. The schema-only deploy uses `prisma db push`,
+//    so a database FK cannot be added before those rows are backfilled.
+//  - `userId` is a scalar FK on the locked `User` model — it stays nullable
+//    while status='invited' (no account yet) and is populated by the
+//    /api/invites/[token]/accept endpoint on accept.
+//  - userId is indexed without a uniqueness constraint so one user can be
+//    represented in multiple workspaces. Adding a new unique constraint to
+//    this populated table is rejected by the schema-only deploy path; the
+//    existing workspace/email key continues to prevent duplicate invites.
+
+model WorkspaceMember {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  email           String
+  role            String    @default("member") // 'admin' | 'member'
+  status          String // 'active' | 'invited'
+  invitedByUserId String
+  userId          String?
+  invitedAt       DateTime  @default(now())
+  joinedAt        DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@index([workspaceId, userId])
+  @@index([userId])
+}

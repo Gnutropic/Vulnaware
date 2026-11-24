@@ -1,0 +1,48 @@
+// @polsia:user-owned — Weekly risk-trend email digest log. One row per
+// (workspaceId, weekStart, triggeredBy) tuple written by
+// jobs/weekly-risk-digest.ts (cron tick) or /api/admin/digest/run (manual
+// admin trigger). The cron vs. manual `triggeredBy` discriminator lets a
+// manual admin re-trigger insert a fresh row even when the cron has
+// already fired for the same week, while a second cron tick on the same
+// Monday collapses to nothing.
+//
+// `workspaceId` is a scalar FK onto `Team.id` — no `@relation` because
+// `Team` lives in the locked api-key.prisma and a Prisma back-relation
+// would force an edit there. Reader/writer code joins by
+// `teamId === workspaceId`, parallel to `VulnerabilityTrend.workspaceId`.
+//
+// `weekStart` is the Monday 00:00:00.000Z floor of the digest week
+// (purely a deterministic key, NOT a separate `Week` primitive on disk).
+// All Json snapshots land with a JSON.parse(JSON.stringify(...)) round
+// trip at the writer so deep-clone strips index signatures and a shape
+// drift surfaces on the next read.
+//
+// Adapter posture: additive only — every column either has a
+// `prisma db push` default or is nullable, so existing rows survive the
+// column landing with no backfill (mirror VulnerabilityTrend).
+
+model DigestLog {
+  id String @id @default(cuid())
+
+  workspaceId String
+
+  weekStart        DateTime
+  summarySubject   String
+  summaryBody      String
+  summaryJson      Json
+  signalSnapshot   Json
+  alertsSnapshot   Json
+
+  recipientCount Int
+  // 'sent' — every recipient envelope succeeded.
+  // 'failed' — every recipient envelope threw.
+  // 'partial' — at least one sender succeeded and at least one threw.
+  status      String
+  triggeredBy String // 'cron' | 'manual'
+
+  createdAt DateTime @default(now())
+
+  @@unique([workspaceId, weekStart, triggeredBy], name: "workspaceId_weekStart_triggeredBy")
+  @@index([workspaceId, weekStart(sort: Desc)])
+  @@index([workspaceId])
+}

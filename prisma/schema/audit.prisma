@@ -1,0 +1,16 @@
+// @polsia:user-owned — Append-only audit trail for sensitive API operations.
+
+model AuditEvent {
+  id           String   @id @default(cuid())
+  actorUserId  String
+  actorTeamId  String
+  action       String
+  resourceType String
+  resourceId   String
+  metadata     Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  @@index([actorTeamId, createdAt])
+  @@index([actorUserId, createdAt])
+}

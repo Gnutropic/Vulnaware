@@ -1,0 +1,33 @@
+// @polsia:user-owned — Per-team scheduled cloud-discovery runs. Persists one
+// row per (team, provider) scheduling decision: how often a team's cloud
+// connections should be queued for re-enumeration (e.g. once an hour). The
+// platform cron in jobs/cloud-discovery-run.ts drains rows whose nextRunAt
+// has passed and dispatches the run through the same business lib the v1
+// /api/v1/{aws,azure,gcp}/discover route handlers use.
+//
+// teamId is a scalar FK; the back-ref `Team.schedules` lives in api-key.prisma
+// alongside the other Team forward-relation decorations (Membership.team,
+// etc.) so Prisma's cross-file generate accepts both sides. We deliberately
+// do not store a `userId` FK for the creating admin — `createdById` is the
+// audit trail for who initially scheduled, not a join target.
+//
+// provider is stored as String (zod-enum at the wire); mirroring the codebase
+// convention for AwsRunStatus / ApiKeyScopeKind rather than a native Prisma
+// enum.
+
+model CloudDiscoverySchedule {
+  id String @id @default(cuid())
+
+  teamId String
+  team   Team   @relation("TeamCloudSchedules", fields: [teamId], references: [id], onDelete: Cascade)
+
+  provider       String
+  cadenceMinutes Int
+  lastRunAt      DateTime?
+  nextRunAt      DateTime
+  createdById    String
+  createdAt      DateTime  @default(now())
+
+  @@index([teamId])
+  @@index([nextRunAt])
+}

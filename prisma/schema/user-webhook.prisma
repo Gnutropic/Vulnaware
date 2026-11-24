@@ -1,0 +1,44 @@
+// @polsia:user-owned — Per-user DevSecOps outbound webhook. One config row
+// per user; the URL is nullable so a user can clear their saved endpoint by
+// saving an empty value (the PUT body zod schema accepts `null`). The
+// companion route handler at src/app/api/account/webhook/route.ts upserts
+// this row scoped to `userId`.
+//
+// `userId` is a scalar FK onto `User.id` — no Prisma `@relation`. The User
+// model lives in the locked auth.prisma and rejects a back-reference field
+// (P1012). Mirrors Membership.userId exactly: scalar, not nullable, indexed.
+//
+// `UserWebhookDelivery` is the 20-row ring buffer of POST attempts the
+// /account page renders under the form. Written by the same code path
+// that POSTs the alert payload (so a real alert and a manual `Send test`
+// both land a row), pruned to the most-recent 20 rows per user on every
+// insert. `payloadKind` distinguishes `'alert'` (a live alert POSTed by
+// `deliverNewAlertUserWebhooks`) from `'test'` (the empty-config branch
+// of `testUserWebhook` plus the manual `{ "test": true }` send). The tiny
+// ring is enough to cover the recent-history window the user wants to see
+// and keeps write-amplification predictable — no per-attempt audit row is
+// written; the deliveries table IS the per-attempt audit surface.
+
+model UserWebhookConfig {
+  id         String   @id @default(cuid())
+  userId     String   @unique       // scalar FK to User.id — no @relation
+  webhookUrl String?                 // nullable so PUT { url: null } wipes
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model UserWebhookDelivery {
+  id           String   @id @default(cuid())
+  userId       String                     // scalar FK to User.id — no @relation
+  attemptedAt  DateTime @default(now())
+  targetUrl    String
+  payloadKind  String                     // 'alert' | 'test'
+  alertId      String?                    // null for test sends; Alert.id otherwise
+  responseCode Int?
+  latencyMs    Int
+  snippet      String?                    // res.text().slice(0, 256) | err.message | null
+
+  @@index([userId, attemptedAt(sort: Desc)])
+}

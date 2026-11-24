@@ -1,0 +1,35 @@
+// @polsia:user-owned — Per-team Slack-compatible outbound webhook for
+// critical alerts. Stores one webhook URL per team and a 5-row ring buffer
+// of delivery attempts (for the /settings/integrations/notifications page).
+//
+// Why no signing columns: Slack-compatible endpoints do not verify HMAC
+// signatures. They authenticate by URL secrecy, so we store the URL as-is
+// (the DB threat model is identical to ApiKey.hash: encrypted-at-rest by the
+// platform) and surface it to admins through the GET route exactly once per
+// team. Audit metadata never echoes the plaintext URL.
+//
+// Cross-file relation `Team.notifications` is declared as a back-reference on
+// the `Team` model in prisma/schema/api-key.prisma (the existing pattern for
+// Team.webhooks / Team.memberships / Team.alerts).
+
+model TeamNotificationConfig {
+  id              String   @id @default(cuid())
+  teamId          String   @unique
+  team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  webhookUrl      String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  createdByUserId String?
+}
+
+model TeamNotificationDelivery {
+  id             String   @id @default(cuid())
+  teamId         String
+  alertId        String? // null for test sends; Alert.id otherwise
+  attemptedAt    DateTime @default(now())
+  responseCode   Int?
+  latencyMs      Int
+  errorMessage   String?
+
+  @@index([teamId, attemptedAt(sort: Desc)])
+}

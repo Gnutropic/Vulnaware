@@ -1,0 +1,353 @@
+// @polsia:user-owned — Per-team alert log for KEV transitions and fresh
+// VulnCheck sightings. One row per hit; the create is fire-and-forget at
+// the row level so a failed insert never blocks rescore. Datasource +
+// generator live in _base.prisma — do not redeclare them.
+//
+// Cross-file relations: Alert.team → Team (back-ref "TeamAlerts" declared
+// in api-key.prisma). Alert.finding → VulnerabilityFinding (back-ref
+// "FindingAlerts" declared in scan.prisma). Both sides are required by
+// Prisma 6; touching api-key.prisma + scan.prisma is correct because both
+// files are user-owned per .polsia/ownership.json.
+
+enum AlertSource {
+  kev
+  vulncheck
+  manual
+}
+
+// Triage state for the per-team alerts list. The default is `open` so
+// existing rows survive `prisma db push` without a backfill; newly inserted
+// rows are also `open`. Triaging flips `acknowledgedAt`; this column is the
+// next-grained operator state (open → in_progress → resolved) and lives
+// alongside it as a separate, additive enum. `false_positive` was added
+// AFTER `resolved` to keep the Prisma ordinal monotone — corresponds to
+// the `falsePositiveReason` column on `Alert`. The companion reverse
+// transition re-opens the row to `open` (recorded in /api/alerts/[id]/reopen)
+// and CLEARS the reason so a triage flip-back never carries the
+// suppression stamp forward.
+enum AlertStatus {
+  open
+  in_progress
+  resolved
+  false_positive
+}
+
+model Alert {
+  id     String @id @default(cuid())
+  teamId String
+  team   Team   @relation("TeamAlerts", fields: [teamId], references: [id], onDelete: Cascade)
+
+  findingId String
+  finding   VulnerabilityFinding @relation("FindingAlerts", fields: [findingId], references: [id], onDelete: Cascade)
+
+  severity       String?
+  status         AlertStatus @default(open)
+  source         AlertSource
+  assigneeId     String?
+  // Sparse FK to `WorkspaceMember.id` — set when a team member claims this
+  // CVE. No `@relation` edge: `WorkspaceMember` lives in (and might be edited
+  // from) the team-membership caller file, and a relation would force a
+  // back-ref edit there. Cross-team safety lives in the /api/alerts/[id]/owner
+  // handler which validates `workspaceId == teamId AND status='active'` before
+  // writing. Nullable so existing rows survive the migration without a backfill.
+  ownerId String?
+  createdAt      DateTime    @default(now())
+  acknowledgedAt DateTime?
+  // Stamped whenever the row's triage state transitions (open → in-progress
+  // → resolved, or re-opened). Powers the daily-digest "items created OR
+  // status-changed in the last 24h" filter so a row that flipped from open
+  // to acknowledged earlier today still surfaces in the 09:00 envelope.
+  // Nullable, no default — existing rows survive `prisma db push` without a
+  // backfill; the @@index enables the OR'd window scan to stay index-only.
+  statusChangedAt DateTime?
+  // Stamped by src/lib/business/alerts-dispatch.ts once the alert has been
+  // emailed to every current team-admin recipient. NULL indicates "still
+  // needs to be dispatched". The composite index narrows the dispatch
+  // window query (dispatchedAt IS NULL AND createdAt <= now - 60s) to a
+  // small index slice per tick.
+  dispatchedAt   DateTime?
+
+  cveSummary AlertCveSummary? @relation("AlertCveSummary")
+  cveFix     AlertCveFix?     @relation("AlertCveFix")
+  explanation AlertExplanation? @relation("AlertExplanation")
+
+  // Per-team snooze window. Set when a member hits "Silence for 7d" on the
+  // detail page; cleared explicitly via `until: null` or implicitly when the
+  // value falls in the past (the list filter treats `snoozedUntil <= now()`
+  // as "ready to surface again" — the column itself is never reset by the
+  // background sweep, only by a user action). Nullable, no default, so
+  // existing rows survive `prisma db push` without a backfill.
+  snoozedUntil DateTime?
+
+  // Operator's reason for marking the alert false-positive. Required
+  // WHEN status === 'false_positive' (enforced by the route handler's
+  // zod body schema and again by the @db.VarChar(500) check at the DB
+  // layer so a malformed client bypassing zod hits an INSERT-level
+  // 500). Nullable otherwise so a row re-opened from false_positive
+  // back to `open` (which /api/alerts/[id]/reopen does) cleanly clears
+  // the stamp. @map pins the Postgres column name so the parity .sql
+  // migration and the generated Prisma client agree. Nullable so
+  // existing rows survive `prisma db push` without a backfill.
+  falsePositiveReason String? @db.VarChar(500) @map("false_positive_reason")
+
+  // Close-stamp trio for `resolved` rows. Mirrors the FP column's
+  // `@polsia:user-owned` posture (single source of truth, additive
+  // only): `closedAt` and `closedBy` are stamped at the same time the
+  // row flips to `resolved` (server-side via
+  // /api/alerts/[id]/resolve), and `closingNote` is the operator's
+  // optional inline summary posted from the detail card's
+  // `<SuggestedRemediationCard>` footer.
+  //
+  //   - `closedAt` is the Date timestamp of the resolve; mirrors
+  //     `acknowledgedAt`'s nullable, no-default posture so existing
+  //     rows survive `prisma db push` without a backfill. Read by
+  //     the detail page to render a "Resolved at …" subtitle WITHOUT
+  //     relying on `statusChangedAt` (which is also bumped on a
+  //     re-open or a transition to other states).
+  //   - `closedBy` is a scalar FK on `User.id` — NO `@relation`
+  //     because `User` lives in the locked auth.prisma and Prisma
+  //     can't extend the relation across files. Mirrors
+  //     `AlertComment.authorId`'s scalar posture exactly.
+  //   - `closingNote` is a 1–500-char free-form note the operator
+  //     can leave on the resolve; cap is enforced both by zod on
+  //     the route body (`AlertResolveBody.note`) AND by VARCHAR(500)
+  //     here, and `closingNote` is nullable so a blank note stores
+  //     NULL (NOT an empty string) and so the reopen path
+  //     (`/api/alerts/[id]/reopen`) cleanly clears the trio back
+  //     to NULL alongside `falsePositiveReason`.
+  //
+  // Nullable so existing rows survive `prisma db push` without a
+  // backfill, and so the reopen path lands cleanly.
+  closedAt    DateTime?
+  closedBy    String?
+  closingNote String?    @db.VarChar(500) @map("closing_note")
+
+  // Reopen-stamp trio for `open` rows that flipped back from
+  // `resolved` (or `false_positive`). Mirrors the additive-only
+  // posture of `closedAt/closedBy/closingNote` and `falsePositiveReason`
+  // — three nullable columns that never break a `prisma db push`,
+  // never overwrite a row that didn't transition, and never strand
+  // prior-stamp data on a triage flip:
+  //
+  //   - `reopenedAt` is the Date timestamp of the most recent
+  //     re-open; nullable, no default so existing rows survive
+  //     `prisma db push` without a backfill. Read by the detail
+  //     page to render a "Last reopened at …" subtitle parallel
+  //     to the existing "Resolved at …" subtitle (and on the
+  //     activity timeline card so an operator scanning the
+  //     lifecycle of a noisy alert doesn't need to scroll for
+  //     timestamps).
+  //   - `reopenedBy` is a scalar FK on `User.id` — NO
+  //     `@relation` because `User` lives in the locked
+  //     auth.prisma and Prisma can't extend the relation across
+  //     files. Mirrors `closedBy`'s scalar posture exactly so
+  //     the future batched `User.findMany` peer-read for
+  //     `actorName` is a single shared helper, not a duplicate
+  //     per column. Reopen actor resolution rides
+  //     `User.name ?? null` — null on a stale row where the
+  //     actor's user is gone.
+  //   - `reopenReason` is a 0–500-char free-form note the
+  //     operator can leave on the reopen; cap is enforced both
+  //     by zod on the route body (`AlertReopenBody.reason`) AND
+  //     by VARCHAR(500) here, and nullable so a blank reopen
+  //     stores NULL (NOT an empty string) — matching the
+  //     `closingNote` posture.
+  //
+  // The reopen route (/api/alerts/[id]/reopen) clears the close
+  // trio + falsePositiveReason in lockstep on the same write
+  // that flips `status → 'open'`, and stamps `reopenedAt`,
+  // `reopenedBy`, `reopenReason` so a re-open never strands a
+  // prior stamp. Lifecycle-wise: a row that flips
+  // resolved → open stamps new reopen trio values; a re-open
+  // of an already-open row (the idempotent branch) does NOT
+  // overwrite the trio — the original reopenedAt/reopenedBy
+  // survives, so the "Last reopened at …" subtitle is a stable
+  // audit stamp, not a per-click churn.
+  reopenedAt   DateTime?
+  reopenedBy   String?
+  reopenReason String?    @db.VarChar(500) @map("reopen_reason")
+
+  // Operator-stamped "I acted on this" timestamp. Mirrors every prior
+  // additive Alert column posture in this file: nullable, no default,
+  // so existing rows survive `prisma db push` without a backfill. The
+  // stamp is set by /api/alerts/[id]/remediate on the caller's own
+  // optimistic flip (`set: 'now'` stamps `new Date()`; `set: 'clear'`
+  // sets the column back to null); the route is owner-only so a
+  // non-owner never lands a stamp on someone else's row.
+  //
+  // Lives ALONGSIDE the triage flag (`acknowledgedAt`) AND the close
+  // stamp trio (`closedAt / closedBy / closingNote`) — it is NOT a
+  // replacement for either, and it deliberately does NOT piggy-back on
+  // `statusChangedAt` (a flip back-and-forth between two non-`'open'`
+  // statuses would otherwise churn the stamp). The detail page renders
+  // "Remediated at …" as a render-only subtitle parallel to the existing
+  // "Triaged at" / "Resolved at" subtitles; the list page renders a
+  // `Remediated` badge at the row-level chip stack so a filtered view
+  // narrows it 1:1 with the row projection.
+  remediatedAt DateTime?
+  // Operator's email stamp, captured at the same time `remediatedAt` is
+  // set. Mirrors the additive-only posture of `closedBy` / `closedAt` /
+  // `reopenedBy` / `reopenedAt`: nullable, no default, so existing rows
+  // survive `prisma db push` without a backfill. Read off this column
+  // by /api/alerts (list) and /api/alerts/[id] (detail) and stamped
+  // onto every AlertItem/AlertDetail envelope as a render-only
+  // identifier (so the row-level chip stack can show "Remediated by
+  // <email>" without a second round trip). The /api/alerts/[id]/remediate
+  // PATCH (single-id) and POST /api/alerts/remediate-batch (bulk) write
+  // it from `WorkspaceMember.email` (preferred) or `User.email` (fall-
+  // back) — the bulk route peer-reads the caller's roster email so a
+  // stale `auth.api.getSession` round-trip never lands `null`. NO
+  // `@map` because the Postgres column name is the JS field verbatim.
+  remediatedByEmail String?
+
+  // index-serves the list path: most-recent-first scans always read
+  // (teamId, createdAt desc).
+  @@index([teamId, createdAt(sort: Desc)])
+  // CSV inventory reads keyset-page this workspace's alerts by id and join
+  // from findings back to their alert rows. Keep both paths indexed so a
+  // large candidate set remains readable before the inventory filters apply.
+  @@index([teamId, id])
+  @@index([teamId, findingId])
+  // index-serves the unpaged filters (source + acknowledged).
+  @@index([teamId, source, acknowledgedAt])
+  // index-serves the dispatch-window scan in findDispatchableAlerts().
+  @@index([dispatchedAt, createdAt])
+  // index-serves the new owner-pick path: filter alerts by team + assigned
+  // member (or scan team-owned rows by ownerId when the UI adds a "owned by
+  // me" filter). Not strictly required for today's writes — the handler
+  // does an indexed `findFirst` on `Alert(id, teamId)` — but cheap to keep
+  // so the per-team owner list doesn't devolve into a heap scan later.
+  @@index([teamId, ownerId])
+  // index-serves the new status chip-row + per-severity counts: the /api/alerts
+  // handler peer-reads a `groupBy({ by: ['severity'], where: { teamId,
+  // status } })` to power the count badges, and the status chip narrows by
+  // (teamId, status). Composite is cheap and avoids a heap scan once the table
+  // grows.
+  @@index([teamId, status])
+  // index-serves the snooze filter on /api/alerts — when `snoozed=true` is
+  // NOT in the query, the route narrows by `teamId, (snoozedUntil IS NULL
+  // OR snoozedUntil <= now)`. The composite (teamId, snoozedUntil) keeps
+  // the OR clause off a heap scan once snoozes are common.
+  @@index([teamId, snoozedUntil])
+  // index-serves the daily-digest selector: the OR'd window scan
+  // (teamId IN [...], createdAt >= window OR statusChangedAt >= window)
+  // stays index-only via the teamId prefix and a covered statusChangedAt
+  // probe; without this composite the OR'd branch could fall back to a
+  // heap scan once the table grows.
+  @@index([teamId, statusChangedAt])
+  // index-serves the "Remediated only" chip on /alerts — when
+  // `?remediated=1` is on the URL, the route narrows by
+  // `Alert.remediatedAt === NOT NULL`. The composite (teamId,
+  // remediatedAt) keeps the OR-clause scan (and the per-team count
+  // peer-read in countsWhere) off a heap scan once remediated rows
+  // accumulate. Mirrors the (teamId, snoozedUntil) composite posture so
+  // the narrow can stay index-bound on the standard
+  // `newest-first-paged` query path.
+  @@index([teamId, remediatedAt])
+
+  // Flat 1:N — assignees post per-alert update notes here. Back-ref live
+  // on Alert in this same file; AlertComment.authorId is a scalar FK to
+  // User.id (no @relation — User lives in the locked auth.prisma).
+  comments AlertComment[] @relation("AlertComments")
+  // Flat 1:N — any signed-in team member can drop a lightweight handoff
+  // note here while a CVE is bouncing between shifts. Back-ref lives on
+  // Alert in this same file; AlertNote.authorUserId is a scalar FK to
+  // User.id (no @relation — User lives in the locked auth.prisma).
+  notes AlertNote[] @relation("AlertNotes")
+}
+
+// Daily CVE velocity trend signal. One row per (workspaceId, windowStart);
+// the cron at jobs/alerts-trend.ts upserts today’s row at 06:00 UTC with
+// a VelocityTrendSignal summary so /api/alerts/trend can return the latest
+// signal for a workspace. `workspaceId` is a scalar FK onto `Team.id` —
+// no `@relation` because Team.id is the per-team primary key and the
+// Trend row never needs the reverse back-ref that a Prisma @relation
+// would force on `Team` (locked in api-key.prisma). Reader/writer code
+// joins by `teamId === workspaceId`.
+//
+// Idempotency: re-runs within the same UTC day collapse to one row via
+// the composite key `workspaceId_windowStart` (windowStart is truncated
+// to UTC midnight in the cron). The composite indexes serve the
+// GET /api/alerts/trend latest-row lookup and the cron’s per-team scan.
+model VulnerabilityTrend {
+  id          String   @id @default(cuid())
+  workspaceId String
+  windowStart DateTime
+  windowEnd   DateTime
+  // VelocityTrendSignal: { velocity, acceleratingDeclines: string[],
+  // hotspots: { host, port, count }[] }. Stored as Json so the schema
+  // can evolve without a migration; parsed through `VelocityTrendSignal`
+  // in src/lib/contracts/alerts.ts on the read path.
+  signal      Json
+  computedAt  DateTime @default(now())
+
+  // GET /api/alerts/trend matches by workspaceId ORDER BY computedAt DESC.
+  @@index([workspaceId, computedAt(sort: Desc)])
+  // Cron idempotency upsert key — supports the composite
+  // `workspaceId_windowStart` unique key inserted below.
+  @@index([workspaceId, windowStart])
+  @@unique([workspaceId, windowStart], name: "workspaceId_windowStart")
+}
+
+// Per-alert assignee update-note thread. Flat 1:N `Alert → AlertComment`;
+// chronological on the read path via the composite index below. Both
+// relation ends live in this user-owned `alerts.prisma` — the back-ref on
+// `Alert` sits above and does not require editing the locked auth file.
+//
+// `authorId` is a plain string FK onto `User.id` (the locked model in
+// `prisma/schema/auth.prisma`). A Prisma `@relation` would force a matching
+// back-ref field on `User`, which the lock rejects — so we resolve
+// `authorName` in app code via a batched `User.findMany({ where: { id: { in:
+// authorIds } } })`, identical to the `ownerName` flow on /api/alerts/[id].
+//
+// `alertId` cascades on `Alert.delete` so dropping an alert evicts its
+// notes; nothing else cascades.
+model AlertComment {
+  id        String   @id @default(cuid())
+  alertId   String
+  alert     Alert    @relation("AlertComments", fields: [alertId], references: [id], onDelete: Cascade)
+  // Scalar FK to User.id — NO @relation (see header above).
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  // index-serves the chronological fetch in /api/alerts/[id]/comments.
+  @@index([alertId, createdAt])
+}
+
+// Per-alert lightweight handoff note. Wired through /api/alerts/[id]/notes
+// and read by the bottom-of-page notes pane. Distinct from AlertComment:
+// an update note lives in the assignee thread (assignee-only composer,
+// ASC chronological) while a handoff note is freely-readable AND freely-
+// postable by any signed-in team member (DESC reverse-chrono, newest
+// first) so SOC teams can hand context off between shifts without having
+// to claim the CVE.
+//
+// Both relation ends live in this user-owned `alerts.prisma` — the back-
+// ref on `Alert` sits above and does not require editing the locked auth
+// file.
+//
+// `authorUserId` is a plain string FK onto `User.id` (the locked model in
+// `prisma/schema/auth.prisma`). A Prisma `@relation` would force a matching
+// back-ref field on `User`, which the lock rejects — so we resolve
+// `authorEmail` in app code via a batched
+// `User.findMany({ where: { id: { in: authorUserIds } } })`, identical to
+// the `ownerName` flow on /api/alerts/[id]/route.ts. Email is preferred
+// over name on this surface because the pane labels "who saw this last"
+// at handoff time and the email is the unambiguous identity (names
+// collide more freely across teammates).
+//
+// `alertId` cascades on `Alert.delete` so dropping an alert evicts its
+// notes; nothing else cascades.
+model AlertNote {
+  id           String   @id @default(cuid())
+  alertId      String
+  alert        Alert    @relation("AlertNotes", fields: [alertId], references: [id], onDelete: Cascade)
+  // Scalar FK to User.id — NO @relation (see header above).
+  authorUserId String
+  body         String
+  createdAt    DateTime @default(now())
+
+  // index-serves the reverse-chronological fetch in /api/alerts/[id]/notes.
+  @@index([alertId, createdAt])
+}

@@ -1,0 +1,17 @@
+// @polsia:user-owned — sliding-window rate-limit bucket store. One row per
+// (credential, epoch-minute) pair. The bucket key column is a SHA-256 hex
+// digest of the credential, never the plaintext, so a DB dump doesn't leak
+// raw API keys or session cookies. windowStart is the integer epoch-minute
+// at which this row's counter started — when the wall clock crosses into a
+// new minute the upsert path lands on a fresh row via a second upsert with
+// `count: 1`. The GC pass deletes rows older than the current window by 2
+// minutes, keeping the table bounded to ~3 windows per active credential.
+
+model RateLimitBucket {
+  key         String   @id
+  windowStart Int
+  count       Int      @default(1)
+  updatedAt   DateTime @updatedAt
+
+  @@index([windowStart])
+}

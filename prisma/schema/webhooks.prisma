@@ -1,0 +1,36 @@
+// @polsia:user-owned — per-endpoint webhook subscriptions with HMAC-SHA256
+// signing. Mirrors api-key.prisma posture: per-Team ownership, soft-deletable,
+// secret stored as an envelope-encrypted ciphertext (the plaintext is never
+// persisted). The `signingSecretCipher` column holds
+// "enc:v1:<base64-iv>:<base64-ciphertext>:<base64-tag>" — an AES-256-GCM
+// encryption of the raw signing secret under the env-held
+// WEBHOOK_SIGNING_KEY. Plaintext is returned exactly once on
+// POST /api/v1/webhooks and never persisted. Cross-file relation
+// Team.webhooks is the back-reference declared on Team (api-key.prisma).
+
+model Webhook {
+  id  String @id @default(cuid())
+  url String
+
+  // Envelope-encrypted signing secret: "enc:v1:<b64iv>:<b64ct>:<b64tag>".
+  // Plaintext is never persisted. Decryption is performed by the business
+  // layer using env.WEBHOOK_SIGNING_KEY; the route uses the plaintext only
+  // in-process to compute the HMAC for each outbound delivery.
+  signingSecretCipher String
+
+  // Hard-coded to 'hmac-sha256' for now. Surfaced on the listing endpoint
+  // so future algorithms can be added without a schema migration.
+  signingAlgorithm String
+
+  // Updated on every successful outbound delivery (best-effort).
+  lastSignedAt DateTime?
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  @@index([teamId])
+  @@index([teamId, revokedAt])
+}

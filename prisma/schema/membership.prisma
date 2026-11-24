@@ -1,0 +1,20 @@
+// @polsia:user-owned — Per-team membership for better-auth users.
+// Scalar FK on userId (no @relation into the framework-owned User model —
+// auth.prisma is locked and rejects back-relations). `userId @unique`
+// implements "one team per user" for this revision; aligned with the task's
+// disjoint-team test. `Membership.team` decorates the same Team record
+// defined in api-key.prisma so the back-reference assembles cleanly
+// without touching any framework-owned file.
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  teamId    String
+  role      String // 'admin' | 'member' | 'viewer'
+  createdAt DateTime @default(now())
+
+  team Team @relation("TeamMemberships", fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}

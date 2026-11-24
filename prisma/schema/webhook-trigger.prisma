@@ -1,0 +1,40 @@
+// @polsia:user-owned — Inbound webhook trigger side-table. One row per
+// POST /api/v1/webhooks/trigger that verifies HMAC and lands a queued scan.
+// Captures the workspace + repository + build context from the CI/CD payload
+// so the Scans page (which renders ScanItem fields) can still correlate the
+// queued scan back to its origin. Cross-file relation `Scan.webhookTrigger`
+// is the back-reference declared on Scan in scan.prisma.
+//
+// Distinct from `webhooks.prisma`'s `Webhook` model (the subscription row
+// holding the long-lived signing secret). This table is per-receipt; the
+// `webhookId` column just FK-tells the verifier which key to compare against
+// without forcing every receipt to re-decrypt the Webhook's secret ciphertext.
+
+model WebhookTrigger {
+  id String @id @default(cuid())
+
+  scanId String @unique
+  scan   Scan   @relation("ScanWebhookTrigger", fields: [scanId], references: [id], onDelete: Cascade)
+
+  teamId String
+
+  // Workspace / repository context (preserved verbatim from the CI payload).
+  repositoryUrl    String
+  repositoryRef    String?
+  repositoryCommit String?
+
+  // Build / pipeline context. All optional — a CI caller may not send them.
+  buildId     String?
+  buildStatus String?
+  buildBranch String?
+
+  // Pin to the Webhook row whose signing secret verified the body so a
+  // post-hoc audit can recover "which secret proved this trigger authentic".
+  webhookId          String
+  signatureAlgorithm String @default("hmac-sha256")
+
+  receivedAt DateTime @default(now())
+
+  @@index([teamId, receivedAt])
+  @@index([webhookId])
+}

@@ -1,0 +1,29 @@
+// @polsia:user-owned — Append-only event log for the self-serve trial
+// funnel. Drives GET /api/analytics/trial activation rates. userId and
+// teamId are scalars (no Prisma @relation) — User is framework-owned in
+// auth.prisma, Team's back-reference already lives on api-key.prisma, and
+// either surface would reject an edit on this file. The same scalar-fk
+// pattern is used by AuditEvent, TrialWorkspace.ownerUserId, and
+// Membership.userId.
+
+model TrialFunnelEvent {
+  id          String   @id @default(cuid())
+  step        String
+  anonymousId String?
+  userId      String?
+  teamId      String?
+  // Cohort + experiment labels so admin reads can segment the funnel
+  // for A/B'd nudges (e.g. `cloud_nudge_v1`). Nullable + defaulted so
+  // pre-existing rows remain groupable under "control"/"unknown" without
+  // a backfill. The server never RESOLVES either field from session —
+  // the client island assigns the cohort (sticky via localStorage) so
+  // the gating logic stays out of the request path.
+  cohort      String?  @default("control")
+  experiment  String?  @default("cloud_nudge_v0")
+  createdAt   DateTime @default(now())
+
+  @@index([step, createdAt])
+  @@index([teamId, step])
+  @@index([cohort, step])
+  @@index([experiment, step])
+}

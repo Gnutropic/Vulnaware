@@ -1,0 +1,43 @@
+// @polsia:user-owned
+
+import Link from 'next/link';
+import { PasswordResetRequestForm } from '@/components/custom/password-reset-request-form';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { brand } from '@/lib/brand';
+
+export const metadata = {
+  title: `Reset your ${brand.name} password`,
+  description: `Request a secure password reset link for your ${brand.name} account.`,
+};
+
+export default function ForgotPasswordPage() {
+  return (
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-[var(--background)] px-gutter py-section">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="absolute left-1/2 top-[-30%] h-[800px] w-[800px] -translate-x-1/2 rounded-full bg-[var(--brand-100)] opacity-40 blur-3xl" />
+        <div className="absolute bottom-[-20%] right-[-10%] h-[500px] w-[500px] rounded-full bg-[var(--brand-200)] opacity-30 blur-3xl" />
+      </div>
+
+      <Card className="relative w-full max-w-md border border-border/60 bg-card/95 shadow-brand backdrop-blur-sm">
+        <CardHeader className="pb-2 text-center">
+          <CardTitle className="text-h4">Forgot your password?</CardTitle>
+          <CardDescription>
+            Enter your account email and we’ll send a reset link if it matches an account.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <PasswordResetRequestForm />
+          <p className="mt-5 text-center text-sm text-muted-foreground">
+            Remembered your password?{' '}
+            <Link
+              href="/login"
+              className="font-medium text-brand-600 underline-offset-2 hover:text-brand-700 hover:underline"
+            >
+              Back to sign in
+            </Link>
+          </p>
+        </CardContent>
+      </Card>
+    </main>
+  );
+}

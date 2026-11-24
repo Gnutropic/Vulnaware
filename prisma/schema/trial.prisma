@@ -1,0 +1,48 @@
+// @polsia:user-owned — Self-serve trial workspace scaffolding.
+// One row per trial team. ownerUserId is a scalar (no @relation into the
+// framework-owned User model — auth.prisma is locked and rejects back-
+// relations). The Team back-reference is added on api-key.prisma (the only
+// existing schema file that owns the Team model); prisma generate accepts
+// the join because both sides declare the same named relation.
+
+model TrialWorkspace {
+  id                             String    @id @default(cuid())
+  teamId                         String    @unique
+  team                           Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  ownerUserId                    String
+  trialEndsAt                    DateTime
+  planLabel                      String    @default("trial-14d")
+  onboardingStep                 Int       @default(0)
+  onboardingCompletedAt          DateTime?
+  sampleSeeded                   Boolean   @default(false)
+  claimTokenHash                 String?   @unique
+  lastReminderSentAt             DateTime?
+  // Stamped the first time the trial-first-scan nudge email is dispatched
+  // to this workspace's owner. Idempotent gate so the hourly cron never
+  // repeats: a user whose first scan never fires only gets one nudge,
+  // not one per cron tick. Nullable — a backfill isn't worth a round trip
+  // because the cron also filters owners who have already completed
+  // first_scan_triggered.
+  lastFirstScanNudgeSentAt       DateTime?
+  // Stamped the first time the user clicks "Dismiss" on the trial
+  // onboarding checklist card pinned to /dashboard. Idempotent: the
+  // card hides once all four steps complete OR this stamp is set, so
+  // a future A/B that re-shows the card can branch on this timestamp
+  // without regressing future visitors. Nullable — no backfill, the
+  // card simply won't hide on legacy workspaces until either condition
+  // resolves naturally.
+  onboardingChecklistDismissedAt DateTime?
+  // Self-reported company size from the public trial signup form.
+  // Captured best-effort: the contract treats it as optional and the
+  // landing remains graceful if absent. Stored as a freeform string
+  // (the zod enum on the boundary validates the input — keeping the
+  // column loose lets the contract evolve without a DB migration).
+  // Nullable for the same reason as the dismiss-stamp: legacy rows
+  // simply read as `null` and the analytics path tolerates missing
+  // values rather than coercing a default.
+  companySize                    String?
+  createdAt                      DateTime  @default(now())
+
+  @@index([trialEndsAt])
+  @@index([ownerUserId])
+}

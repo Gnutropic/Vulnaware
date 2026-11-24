@@ -1,0 +1,38 @@
+// @polsia:user-owned — Per-user subscription tier row. Authoritative
+// local source-of-truth for "what plan is this user on": the row
+// drives /account, posts from /billing/success, and the immediate-
+// write path from /pricing when a buyer picks Starter. When the row
+// is absent the proxy is the fallback — see README §"Active plan
+// resolution".
+//
+// Scalar FK to `User.id` — no Prisma `@relation`. The `User` model
+// lives in the locked auth.prisma and rejects a back-reference field
+// (P1012 at generate time). Mirrors DailyDigestPrefs.userId + UserWebhookConfig.userId
+// exactly: scalar, not nullable, indexed, with `@unique` so
+// `upsert({ where: { userId } })` collapses existence into one call.
+//
+// `tier` is `String` (the route's zod schema constrains runtime writes
+// to the literal union 'starter' | 'pro' | 'enterprise'). A free-form
+// string keeps the schema simple — every read in the app re-resolves
+// the slug through `pricingTiers.find(t => t.slug === row.tier)` so
+// renaming a tier costs one catalog edit.
+//
+// No migration file. The template is schema-only (`npx prisma db push`
+// runs every boot — polsia.toml start line). The table materialises on
+// the first push after this file lands; existing rows are unaffected.
+
+model UserSubscription {
+  id                    String    @id @default(cuid())
+  userId                String    @unique                 // scalar FK to User.id — no @relation
+  tier                  String                             // 'starter' | 'pro' | 'enterprise' — constrained by zod at the route boundary
+  stripeSessionId       String?   @unique                 // Chrome Stripe Checkout sessions, populated only on the Pro path. Kept @unique so cross-user session reuse throws at the DB layer.
+  stripeSessionBindKey  String?                           // escalation slot for future session redeclaration under the same user (separate from @unique stripeSessionId so concurrent upgrades don't fail-fast)
+  stripeCustomerEmail   String?                           // mirrored from the verified payment so /account can show it without a fresh proxy read
+  stripeCustomerId      String?                           // mirrored from verified.payment when exposed; forwarded-compatible with the proxy echoing a customer_id alongside customer_email
+  lastVerifiedAt        DateTime?                         // when the proxy was last consulted for this row; /api/account/active-plan re-checks when this is older than N (default 5 min)
+  active                Boolean    @default(true)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  @@index([userId])
+}

@@ -1,0 +1,114 @@
+// @polsia:user-owned — Azure asset discovery models. Purely additive: does not
+// touch any existing model. Mirrors the AWS discovery schema, with Azure-
+// specific credential fields. The customer-supplied client secret is stored
+// per row — see the connection-form disclosure in src/components/custom/
+// azure-connection-form.tsx for the user-visible warning.
+//
+// userId is a scalar String on every model — User lives in the framework-
+// owned auth.prisma and cannot host a @relation across files, so foreign
+// reads happen by id array lookup, never `include: { user: true }`.
+
+model AzureConnection {
+  id String @id @default(cuid())
+
+  // Owner of the connection. NOT a Prisma @relation — User is locked in
+  // auth.prisma (framework-owned) and Prisma cannot extend a back-relation
+  // across files. Reads/joins are done by `userId` scalar lookups.
+  userId String
+
+  subscriptionId String
+  tenantId       String
+  clientId       String
+  // Stored per row so each connection is self-contained. The connection form
+  // discloses this storage to the user (see the form's warning banner).
+  clientSecret   String
+  label          String
+  // Locations pinned to this connection. Empty → fall back to 'eastus'.
+  locations      String[]  @default([])
+  createdAt      DateTime  @default(now())
+  lastTestedAt   DateTime?
+
+  runs AzureDiscoveryRun[] @relation("AzureConnRuns")
+
+  @@index([userId])
+}
+
+model AzureDiscoveryRun {
+  id String @id @default(cuid())
+
+  // Owner — scalar, same rationale as AzureConnection.userId.
+  userId String
+
+  connectionId String
+  connection   AzureConnection @relation("AzureConnRuns", fields: [connectionId], references: [id], onDelete: Cascade)
+
+  status         String    @default("queued")
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+  errorMessage   String?
+  // Resolved subscription id post-auth (Azure permits assume into any sub
+  // the service principal can see; we record the one we enumerated).
+  subscriptionId String?
+  // Frozen copy of the locations scanned.
+  locations      String[]  @default([])
+  resourcesTotal Int       @default(0)
+
+  assets   AzureAsset[]   @relation("AzureRunAssets")
+  findings AzureFinding[] @relation("AzureRunFindings")
+
+  @@index([userId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([userId, status])
+}
+
+model AzureAsset {
+  id String @id @default(cuid())
+
+  runId String
+  run   AzureDiscoveryRun @relation("AzureRunAssets", fields: [runId], references: [id], onDelete: Cascade)
+
+  subscriptionId String
+  location       String
+  resourceType   String
+  // Synthetic Azure resource id (e.g. /subscriptions/.../virtualMachines/myVm).
+  resourceArn    String
+  resourceId     String?
+  publicExposure String?
+  serviceHint    String?
+  tags           Json?
+  findings       AzureFinding[] @relation("AzureAssetFindings")
+
+  @@unique([runId, resourceArn])
+  @@index([runId])
+  @@index([resourceType, publicExposure])
+}
+
+// Sibling of AWS AwsFinding — shape-driven Azure findings. Synthesized cveId
+// values like AZ-VM-PUBLIC-001 are valid Strings but not real CVE entries.
+model AzureFinding {
+  id String @id @default(cuid())
+
+  runId String
+  run   AzureDiscoveryRun @relation("AzureRunFindings", fields: [runId], references: [id], onDelete: Cascade)
+
+  assetId String
+  asset   AzureAsset @relation("AzureAssetFindings", fields: [assetId], references: [id], onDelete: Cascade)
+
+  cveId          String
+  // Provenance — same semantics as AwsFinding.cveSource: 'synthesized'
+  // (default for the AZ-* ids), 'shape' (resource-shape fingerprinting),
+  // or 'cve-db' (real CVE-* id from matcher.ts).
+  cveSource      String?   @default("synthesized")
+  severity       String?
+  matchReason    String
+  priorityScore  Float?
+  epssScore      Float?
+  epssPercentile Float?
+  kevListed      Boolean   @default(false)
+  kevListedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([runId, cveId])
+  @@index([assetId])
+}
