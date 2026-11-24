@@ -541,3 +541,113 @@ versions that direct framework pins cannot reach on their own.
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+
+
+---
+
+## COMP 4721 Graduate Research Project
+
+### Project Summary
+
+VulnAware is an AI-assisted vulnerability scanning application developed using Polsia. This graduate research project evaluates its standalone TypeScript TCP scanner through controlled experiments in Kali Linux. The evaluation focuses on TCP port-state detection, passive service banner collection, heuristic CVE matching, authorization controls, and comparison with Nmap. The scanner identifies potential security concerns but does not independently verify vulnerabilities.
+
+### Local Research Architecture
+
+```mermaid
+flowchart TD
+    A[Scan request: host and port] --> B{Allowlisted pair?}
+    B -->|No| C[Reject request]
+    B -->|Yes| D[TCP connection]
+    D --> E[Authorized test server]
+    E --> F[Banner observation]
+    F --> G[Heuristic CVE matching]
+    G --> H[JSON report]
+```
+
+### Important Project Files
+
+| File or Folder | Purpose |
+| --- | --- |
+| `src/` | Application source code and scanner components |
+| `scripts/local-scan.ts` | Standalone scanning command |
+| `scripts/local-scan-core.ts` | Local scan execution and authorization |
+| `scripts/local-banner-server.ts` | Controlled TCP banner server |
+| `scripts/local-scan.allowlist.json` | Authorized IP addresses and ports |
+| `tests/` | Unit, integration, and application tests |
+| `prisma/` | Database schema and migrations |
+| `docs/local-scan.md` | Additional scanner instructions |
+| `DEMO.md` | Test procedures and video demonstration |
+| `AI_USAGE.md` | AI development disclosure |
+
+### Evaluated Environment
+
+- Windows host running VMware Workstation
+- Kali Linux 2026.1 virtual machine
+- Approximately 4 GB of VM memory
+- Node.js 24.22.2
+- npm 12.2.0
+- Nmap 7.99
+- TypeScript and Node.js
+- Local loopback address: 127.0.0.1
+- Authorized test port: 2222
+
+### Installation
+
+Clone the project:
+
+```bash
+git clone https://github.com/Gnutropic/Vulnaware.git
+cd Vulnaware
+npm ci --no-audit --no-fund
+```
+
+### Running the Scanner
+
+Start the local test server in Terminal 1:
+
+```bash
+npx --no-install tsx scripts/local-banner-server.ts --host 127.0.0.1 --port 2222 --banner 'OpenSSL/1.0.1e'
+```
+
+Run the authorized scan in Terminal 2:
+
+```bash
+npx --no-install tsx scripts/local-scan.ts --host 127.0.0.1 --port 2222 --output ./local-scan-results/kali-loopback.json
+```
+
+View the results:
+
+```bash
+python3 -m json.tool ./local-scan-results/kali-loopback.json
+```
+
+### Evaluation Results
+
+Five repeated authorized scans produced:
+
+- VulnAware: 5/5 successful open-port detections
+- Nmap: 5/5 successful open-port detections
+- VulnAware: 154.2 ms average internal scan duration
+- Nmap: 42.0 ms average reported scan duration
+
+The timing measurements have different boundaries and should not be considered a direct speed comparison.
+
+The scanner also rejected an unauthorized port and correctly reported the state of closed and silent TCP services.
+
+### Known Limitations
+
+- Banner matching does not verify actual vulnerabilities.
+- The OpenSSL banner was simulated.
+- The Heartbleed candidate was explicitly unverified.
+- Silent services may be detected without identification.
+- HTTP and TLS vulnerability verification were not demonstrated.
+- Raspberry Pi ARM64 testing was not completed.
+
+### Demonstration
+
+See [DEMO.md](DEMO.md) for the recorded demonstration, exact commands, expected results, and instructions for reproducing the experiments.
+
+### AI Usage
+
+See [AI_USAGE.md](AI_USAGE.md) for details about the use of Polsia and ChatGPT.
